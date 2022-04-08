@@ -1,2 +1,1 @@
-# usb-device
- 
+# pico-usb-device mouse&serial
