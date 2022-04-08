@@ -4,29 +4,43 @@
 // The macro for our start-up function
 use cortex_m_rt::entry;
 
-use embedded_hal::digital::v2::InputPin;
-use embedded_hal::digital::v2::OutputPin;
-use embedded_hal::digital::v2::ToggleableOutputPin;
-use embedded_time::rate::*;
+use embedded_hal::digital::v2::{InputPin, OutputPin, ToggleableOutputPin};
+use embedded_time::rate::Extensions;
+use hal::{
+    gpio::{
+        bank0::{Gpio12, Gpio13},
+        Output, Pin, PushPull,
+    },
+    spi::Enabled,
+    Spi,
+};
 // The macro for marking our interrupt functions
-use rp_pico::hal::pac::interrupt;
-
+use core::{fmt::Write, str::FromStr};
+use rp_pico::{hal::pac::interrupt, pac::SPI1};
 // Ensure we halt the program on panic (if we don't mention this crate it won't
 // be linked)
+use display_interface_spi::SPIInterfaceNoCS;
+use embedded_graphics::{
+    mono_font::{ascii::FONT_10X20, MonoTextStyleBuilder},
+    pixelcolor::Rgb565,
+    prelude::*,
+    primitives::{Circle, Line, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Triangle},
+    text::{Baseline, Text},
+};
 use panic_halt as _;
-
+use st7789::Orientation;
+use st7789::ST7789;
+use tinybmp::DynamicBmp;
 // Pull in any important traits
 use embedded_time::fixed_point::FixedPoint;
 use rp_pico::hal::prelude::*;
-
 // A shorter alias for the Peripheral Access Crate, which provides low-level
 // register access
-use rp_pico::hal::pac;
+use rp_pico::hal::{gpio, pac, spi};
 
 // A shorter alias for the Hardware Abstraction Layer, which provides
 // higher-level drivers.
 use rp_pico::hal;
-use rp_pico::hal::gpio;
 
 // USB Device support
 use usb_device::{class_prelude::*, prelude::*};
@@ -42,18 +56,17 @@ static mut USB_DEVICE: Option<UsbDevice<hal::usb::UsbBus>> = None;
 
 /// The USB Bus Driver (shared with the interrupt).
 static mut USB_BUS: Option<UsbBusAllocator<hal::usb::UsbBus>> = None;
+static mut DISPLAY: Option<
+    ST7789<
+        SPIInterfaceNoCS<Spi<Enabled, SPI1, 8>, Pin<Gpio13, Output<PushPull>>>,
+        Pin<Gpio12, Output<PushPull>>,
+    >,
+> = None;
 
 /// The USB Human Interface Device Driver (shared with the interrupt).
 static mut USB_HID: Option<HIDClass<hal::usb::UsbBus>> = None;
 static mut USB_SERIAL: Option<SerialPort<hal::usb::UsbBus>> = None;
 
-/// Entry point to our bare-metal application.
-///
-/// The `#[entry]` macro ensures the Cortex-M start-up code calls this function
-/// as soon as all global variables are initialised.
-///
-/// The function configures the RP2040 peripherals, then submits cursor movement
-/// updates periodically.
 #[entry]
 fn main() -> ! {
     // Grab our singleton objects
@@ -124,10 +137,6 @@ fn main() -> ! {
         USB_DEVICE = Some(usb_dev);
     }
 
-    unsafe {
-        // Enable the USB interrupt
-        pac::NVIC::unmask(hal::pac::Interrupt::USBCTRL_IRQ);
-    };
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().integer());
     let mut led = pins.led.into_push_pull_output();
 
@@ -136,6 +145,33 @@ fn main() -> ! {
     let left_pin = pins.gpio16.into_pull_up_input();
     let right_pin = pins.gpio17.into_pull_up_input();
     let mid_pin = pins.gpio22.into_pull_up_input();
+
+    let _spi_sclk = pins.gpio10.into_mode::<gpio::FunctionSpi>();
+    let _spi_mosi = pins.gpio11.into_mode::<gpio::FunctionSpi>();
+    let _spi_imso = pins.gpio8.into_mode::<gpio::FunctionSpi>();
+    let disp_res = pins.gpio12.into_push_pull_output();
+    let disp_dc = pins.gpio13.into_push_pull_output();
+
+    let spi = spi::Spi::<_, _, 8>::new(pac.SPI1);
+
+    let spi = spi.init(
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+        32_000_000u32.Hz(),
+        &embedded_hal::spi::MODE_3,
+    );
+    let di = SPIInterfaceNoCS::new(spi, disp_dc);
+    let mut display = ST7789::new(di, disp_res, 240, 240);
+    display.init(&mut delay).unwrap();
+    display.set_orientation(Orientation::Portrait).unwrap();
+    display.clear(Rgb565::BLACK).unwrap();
+    unsafe {
+        DISPLAY = Some(display);
+    }
+    unsafe {
+        // Enable the USB interrupt
+        pac::NVIC::unmask(hal::pac::Interrupt::USBCTRL_IRQ);
+    };
 
     let rep_up = MouseReport {
         x: 0,
@@ -180,14 +216,16 @@ fn main() -> ! {
         pan: 0,
     };
     let mut led_count = 0;
+    let mut num = 0;
     // Move the cursor up and down every 200ms
     loop {
         led_count += 1;
-        if led_count == 25 {
+        if led_count == 100 {
             led.toggle().unwrap();
             led_count = 0;
+            num += 1;
         }
-        delay.delay_ms(20);
+        delay.delay_ms(5);
         if up_pin.is_low().unwrap() {
             push_mouse_movement(rep_up).ok().unwrap_or(0);
         }
@@ -231,6 +269,7 @@ unsafe fn USBCTRL_IRQ() {
     let usb_dev = USB_DEVICE.as_mut().unwrap();
     let usb_hid = USB_HID.as_mut().unwrap();
     let serial = USB_SERIAL.as_mut().unwrap();
+    let display = DISPLAY.as_mut().unwrap();
 
     if !SAID_HELLO.load(Ordering::Relaxed) {
         SAID_HELLO.store(true, Ordering::Relaxed);
@@ -253,11 +292,63 @@ unsafe fn USBCTRL_IRQ() {
                     let _ = serial.write(wr_ptr).map(|len| {
                         wr_ptr = &wr_ptr[len..];
                     });
+                    let text_style = MonoTextStyleBuilder::new()
+                        .font(&FONT_10X20)
+                        .text_color(Rgb565::CYAN)
+                        .build();
+                    let mut buff = FmtBuf::new();
+                    buff.reset();
+                    write!(&mut buff, "receive: {:?}", &buf[..count]).unwrap();
+                    display
+                        .fill_solid(
+                            &Rectangle::new(
+                                Point { x: 0, y: 0 },
+                                Size {
+                                    width: 240,
+                                    height: 20,
+                                },
+                            ),
+                            Rgb565::BLACK,
+                        )
+                        .unwrap();
+                    Text::with_baseline(buff.as_str(), Point::zero(), text_style, Baseline::Top)
+                        .draw(display)
+                        .unwrap();
                 }
             }
         }
     }
     // usb_dev.poll(&mut [usb_hid, serial]);
 }
+struct FmtBuf {
+    buf: [u8; 64],
+    ptr: usize,
+}
+impl FmtBuf {
+    fn new() -> Self {
+        Self {
+            buf: [0; 64],
+            ptr: 0,
+        }
+    }
+    fn reset(&mut self) {
+        self.ptr = 0;
+    }
 
-// End of file
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[0..self.ptr]).unwrap()
+    }
+}
+impl core::fmt::Write for FmtBuf {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let rest_len = self.buf.len() - self.ptr;
+        let len = if rest_len < s.len() {
+            rest_len
+        } else {
+            s.len()
+        };
+        self.buf[self.ptr..(self.ptr + len)].copy_from_slice(&s.as_bytes()[0..len]);
+        self.ptr += len;
+        Ok(())
+    }
+}

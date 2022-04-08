@@ -23,3 +23,6 @@ tinybmp="*"
 usb-device= {version="*",features = ["control-buffer-256"] }
 usbd-serial = "*"
 usbd-hid = "*"
+display-interface = "*"
+display-interface-spi = "*"
+heapless="*"
