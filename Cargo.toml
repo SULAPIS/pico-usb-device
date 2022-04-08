@@ -1,0 +1,25 @@
+[package]
+name = "pico-rust-template"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rp2040-hal = "*"
+cortex-m-rt = "*"
+cortex-m = "*"
+panic-halt = "*"
+rp2040-boot2 = "*"
+embedded-hal = "*"
+embedded-time = "*"
+rp-pico="*"
+nb="*"
+embedded-graphics="*"
+ssd1306="*"
+st7789="*"
+micromath="*"
+tinybmp="*"
+usb-device= {version="*",features = ["control-buffer-256"] }
+usbd-serial = "*"
+usbd-hid = "*"
