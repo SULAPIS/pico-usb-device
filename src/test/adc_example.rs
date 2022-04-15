@@ -2,32 +2,19 @@
 #![no_main]
 
 use cortex_m_rt::entry;
-use heapless::*;
-use serde::{Deserialize, Serialize};
-use serde_json_core;
-
-use rp_pico::hal;
-use rp_pico::hal::{gpio, pac};
-
+use embedded_hal::adc::OneShot;
+use embedded_time::rate::*;
 use panic_halt as _;
+use rp2040_hal::{adc::Adc, gpio::Pins, pac, Sio};
+use rp_pico::hal;
+use rp_pico::hal::prelude::*;
 
-#[derive(Serialize, Deserialize)]
-struct Point {
-    x: i32,
-    y: i32,
-}
 #[entry]
 fn main() -> ! {
-    // Grab our singleton objects
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
 
-    // Set up the watchdog driver - needed by the clock setup code
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
-
-    // Configure the clocks
-    //
-    // The default is to generate a 125 MHz system clock
     let clocks = hal::clocks::init_clocks_and_plls(
         rp_pico::XOSC_CRYSTAL_FREQ,
         pac.XOSC,
@@ -40,10 +27,7 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
-    // The single-cycle I/O block controls our GPIO pins
     let sio = hal::Sio::new(pac.SIO);
-
-    // Set the pins up according to their function on this particular board
     let pins = rp_pico::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
@@ -51,6 +35,8 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    let point = Point { x: 1, y: 2 };
+    let mut adc = Adc::new(pac.ADC, &mut pac.RESETS);
+    let mut adc_pin_0 = pins.gpio26.into_floating_input();
+    let pin_adc_counts: u16 = adc.read(&mut adc_pin_0).unwrap();
     loop {}
 }

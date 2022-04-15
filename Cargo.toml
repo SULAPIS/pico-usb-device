@@ -26,3 +26,5 @@ usbd-hid = "*"
 display-interface = "*"
 display-interface-spi = "*"
 heapless="*"
+serde={version="*",default-features=false,features=["derive"]}
+serde-json-core="*"
