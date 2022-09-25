@@ -9,6 +9,8 @@
 
 #![no_std]
 #![no_main]
+mod fmt;
+mod sensor;
 
 // The macro for our start-up function
 use cortex_m_rt::entry;
@@ -33,6 +35,7 @@ use rp_pico::hal::pac;
 // A shorter alias for the Hardware Abstraction Layer, which provides
 // higher-level drivers.
 use rp_pico::hal;
+use sensor::sensor::As5600;
 
 /// Entry point to our bare-metal application.
 ///
@@ -83,12 +86,33 @@ fn main() -> ! {
     // Set the LED to be an output
     let mut led_pin = pins.led.into_push_pull_output();
 
+    let sda_pin = pins.gpio16.into_mode::<hal::gpio::FunctionI2C>();
+    let scl_pin = pins.gpio17.into_mode::<hal::gpio::FunctionI2C>();
+    led_pin.set_low().unwrap();
+
+    let i2c = hal::I2C::i2c0(
+        pac.I2C0,
+        sda_pin,
+        scl_pin,
+        400.kHz(),
+        &mut pac.RESETS,
+        clocks.peripheral_clock,
+    );
+
+    let mut as5600 = As5600::new(i2c);
+
     // Blink the LED at 1 Hz
     loop {
-        led_pin.set_high().unwrap();
-        delay.delay_ms(500);
-        led_pin.set_low().unwrap();
-        delay.delay_ms(500);
+        let a = as5600.get_angle();
+        if a > 180.0 {
+            led_pin.set_high().unwrap();
+        } else {
+            led_pin.set_low().unwrap();
+        }
+
+        delay.delay_ms(1);
+
+        // delay.delay_ms(500);
     }
 }
 
